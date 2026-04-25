@@ -1,122 +1,72 @@
 package com.tevs.server.controller;
 
 import com.tevs.server.model.StatusMessage;
-import com.tevs.server.repository.StatusRepository;
-import com.tevs.server.replication.ReplicationEvent;
-import com.tevs.server.replication.ReplicationPublisher;
+import com.tevs.server.service.NodeStateManager;
+import com.tevs.server.service.StatusService;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 
 @RestController
 @RequestMapping("/api")
 public class StatusController {
 
-    private final StatusRepository repository;
-    private final ReplicationPublisher publisher;
+    private final StatusService statusService;
+    private final NodeStateManager nodeStateManager;
     private final String nodeId;
 
-    public StatusController(StatusRepository repository,
-                            ReplicationPublisher publisher,
+    public StatusController(StatusService statusService,
+                            NodeStateManager nodeStateManager,
                             @Value("${node.id:node-a}") String nodeId) {
-        this.repository = repository;
-        this.publisher = publisher;
+        this.statusService = statusService;
+        this.nodeStateManager = nodeStateManager;
         this.nodeId = nodeId;
     }
 
     @PostMapping("/status")
-    public ResponseEntity<?> saveOrUpdate(@RequestBody StatusMessage status) {
-        String validationError = validateStatusMessage(status);
-        if (validationError != null) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("error", validationError));
-        }
-
-        if (status.getTime() == null) {
-            status.setTime(Instant.now());
-        }
-
-        boolean isNew = !repository.existsById(status.getUsername());
-        StatusMessage saved = repository.save(status);
-
-        try {
-            publisher.publish(new ReplicationEvent("UPDATE", saved, nodeId, Instant.now()));
-        } catch (Exception e) {
-            // Log replication failure but don't fail the client request
-            System.err.println("Replication publish failed: " + e.getMessage());
-        }
-
-        return ResponseEntity.status(isNew ? HttpStatus.CREATED : HttpStatus.OK).body(saved);
+    public ResponseEntity<?> saveOrUpdate(@Valid @RequestBody StatusMessage status) {
+        StatusService.SaveResult result = statusService.saveOrUpdate(status);
+        HttpStatus httpStatus = result.outcome() == StatusService.SaveOutcome.CREATED
+                ? HttpStatus.CREATED : HttpStatus.OK;
+        return ResponseEntity.status(httpStatus).body(result.message());
     }
 
     @GetMapping("/status/{username}")
     public ResponseEntity<StatusMessage> getByUsername(@PathVariable String username) {
-        Optional<StatusMessage> result = repository.findById(username);
-        return result.map(ResponseEntity::ok)
-                     .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).build());
+        return statusService.findByUsername(username)
+                .map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).build());
     }
 
     @DeleteMapping("/status/{username}")
     public ResponseEntity<Void> delete(@PathVariable String username) {
-        if (!repository.existsById(username)) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
-        }
-        repository.deleteById(username);
-
-        StatusMessage tombstone = new StatusMessage();
-        tombstone.setUsername(username);
-        try {
-            publisher.publish(new ReplicationEvent("DELETE", tombstone, nodeId, Instant.now()));
-        } catch (Exception e) {
-            System.err.println("Replication publish failed: " + e.getMessage());
-        }
-
-        return ResponseEntity.noContent().build();
+        boolean deleted = statusService.deleteByUsername(username);
+        return deleted
+                ? ResponseEntity.noContent().build()
+                : ResponseEntity.status(HttpStatus.NOT_FOUND).build();
     }
 
     @GetMapping("/status")
     public List<StatusMessage> getAll() {
-        return repository.findAll();
+        return statusService.findAll();
     }
 
     @GetMapping("/health")
     public ResponseEntity<Map<String, String>> health() {
-        return ResponseEntity.ok(Map.of("status", "UP", "nodeId", nodeId));
+        return ResponseEntity.ok(Map.of(
+                "status", "UP",
+                "nodeId", nodeId,
+                "nodeState", nodeStateManager.getState().name()
+        ));
     }
 
     @GetMapping("/sync/all")
     public List<StatusMessage> syncAll() {
-        return repository.findAll();
-    }
-
-    private String validateStatusMessage(StatusMessage status) {
-        if (status == null) {
-            return "Request body is required";
-        }
-        if (status.getUsername() == null || status.getUsername().isBlank()) {
-            return "username is required";
-        }
-        if (status.getStatustext() == null || status.getStatustext().isBlank()) {
-            return "statustext is required";
-        }
-        if (status.getLatitude() == null) {
-            return "latitude is required";
-        }
-        if (status.getLatitude() < -90.0 || status.getLatitude() > 90.0) {
-            return "latitude must be between -90 and 90";
-        }
-        if (status.getLongitude() == null) {
-            return "longitude is required";
-        }
-        if (status.getLongitude() < -180.0 || status.getLongitude() > 180.0) {
-            return "longitude must be between -180 and 180";
-        }
-        return null;
+        return statusService.findAll();
     }
 }

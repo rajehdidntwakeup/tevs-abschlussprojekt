@@ -1,10 +1,18 @@
 const NODE_URLS = [
-  'http://localhost:8443',
-  'http://localhost:8444',
-  'http://localhost:8445',
+  'https://localhost:8443',
+  'https://localhost:8444',
+  'https://localhost:8445',
 ];
 
 const TIMEOUT_MS = 3000;
+
+export class AllNodesUnreachable extends Error {
+  constructor(cause) {
+    super('All nodes unreachable');
+    this.cause = cause;
+    this.name = 'AllNodesUnreachable';
+  }
+}
 
 async function fetchWithFailover(path, options = {}) {
   let lastError;
@@ -27,7 +35,7 @@ async function fetchWithFailover(path, options = {}) {
       lastError = err;
     }
   }
-  throw lastError || new Error('All nodes unreachable');
+  throw new AllNodesUnreachable(lastError);
 }
 
 export async function getAllStatuses() {

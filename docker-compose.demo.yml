@@ -1,0 +1,54 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: tevs-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  node-a:
+    build: ./server
+    container_name: tevs-node-a
+    ports:
+      - "8443:8443"
+    environment:
+      - NODE_ID=node-a
+      - SERVER_PORT=8443
+      - NODE_PEERS=https://node-b:8444,https://node-c:8445
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  node-b:
+    build: ./server
+    container_name: tevs-node-b
+    ports:
+      - "8444:8443"
+    environment:
+      - NODE_ID=node-b
+      - SERVER_PORT=8443
+      - NODE_PEERS=https://node-a:8443,https://node-c:8445
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  node-c:
+    build: ./server
+    container_name: tevs-node-c
+    ports:
+      - "8445:8443"
+    environment:
+      - NODE_ID=node-c
+      - SERVER_PORT=8443
+      - NODE_PEERS=https://node-a:8443,https://node-b:8444
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy

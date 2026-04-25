@@ -3,6 +3,7 @@ package com.tevs.server.model;
 import jakarta.persistence.Entity;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import jakarta.validation.constraints.*;
 import java.time.Instant;
 
 @Entity
@@ -10,11 +11,22 @@ import java.time.Instant;
 public class StatusMessage {
 
     @Id
+    @NotBlank(message = "username is required")
     private String username;
 
+    @NotBlank(message = "statustext is required")
     private String statustext;
+
     private Instant time;
+
+    @NotNull(message = "latitude is required")
+    @Min(value = -90, message = "latitude must be at least -90")
+    @Max(value = 90, message = "latitude must be at most 90")
     private Double latitude;
+
+    @NotNull(message = "longitude is required")
+    @Min(value = -180, message = "longitude must be at least -180")
+    @Max(value = 180, message = "longitude must be at most 180")
     private Double longitude;
 
     public StatusMessage() {}

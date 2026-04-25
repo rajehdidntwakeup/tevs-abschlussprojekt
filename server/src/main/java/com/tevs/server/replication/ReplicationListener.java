@@ -1,23 +1,27 @@
 package com.tevs.server.replication;
 
-import com.tevs.server.model.StatusMessage;
-import com.tevs.server.repository.StatusRepository;
+import com.tevs.server.service.NodeStateManager;
+import com.tevs.server.service.StatusService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
-import java.time.Instant;
-import java.util.Optional;
-
 @Component
 public class ReplicationListener {
 
-    private final StatusRepository repository;
+    private static final Logger log = LoggerFactory.getLogger(ReplicationListener.class);
+
+    private final StatusService statusService;
+    private final NodeStateManager nodeStateManager;
     private final String nodeId;
 
-    public ReplicationListener(StatusRepository repository,
+    public ReplicationListener(StatusService statusService,
+                               NodeStateManager nodeStateManager,
                                @Value("${node.id:node-a}") String nodeId) {
-        this.repository = repository;
+        this.statusService = statusService;
+        this.nodeStateManager = nodeStateManager;
         this.nodeId = nodeId;
     }
 
@@ -32,34 +36,15 @@ public class ReplicationListener {
             return;
         }
 
-        StatusMessage payload = event.getPayload();
-        String username = payload.getUsername();
-        if (username == null) {
+        // Drop replication events during bootstrap to avoid race with bulk insert.
+        // Bootstrap is authoritative — peer already replicated these events.
+        if (nodeStateManager.isBootstrapping()) {
+            log.debug("Dropping replication event during bootstrap: type={} from={}",
+                    event.getEventType(), event.getOriginNode());
             return;
         }
 
-        if ("DELETE".equalsIgnoreCase(event.getEventType())) {
-            if (repository.existsById(username)) {
-                repository.deleteById(username);
-            }
-            return;
-        }
-
-        // Last-Writer-Wins: only apply if incoming is strictly newer
-        Optional<StatusMessage> existing = repository.findById(username);
-        if (existing.isPresent()) {
-            Instant localTime = existing.get().getTime();
-            Instant incomingTime = payload.getTime();
-            if (incomingTime == null || !incomingTime.isAfter(localTime)) {
-                return;
-            }
-        }
-
-        // Ensure all required fields are present before saving
-        if (payload.getTime() == null) {
-            payload.setTime(Instant.now());
-        }
-
-        repository.save(payload);
+        statusService.applyReplication(event);
+        log.debug("Processed replication event type={} from {}", event.getEventType(), event.getOriginNode());
     }
 }

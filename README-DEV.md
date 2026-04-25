@@ -17,11 +17,21 @@ RabbitMQ Management UI: http://localhost:15672 (guest / guest)
 cd server
 mvn clean package
 
-# Node A (port 8443)
+# Node A (port 8443, standalone mode)
 java -jar target/server-0.0.1-SNAPSHOT.jar
 
-# Node B (port 8444) — in another terminal
-SERVER_PORT=8444 NODE_ID=node-b java -jar target/server-0.0.1-SNAPSHOT.jar
+# Node B (port 8444, bootstraps from Node A)
+SERVER_PORT=8444 NODE_ID=node-b \
+  NODE_PEERS=https://localhost:8443 \
+  java -jar target/server-0.0.1-SNAPSHOT.jar
+
+# Node C (port 8445, bootstraps from Node A)
+SERVER_PORT=8445 NODE_ID=node-c \
+  NODE_PEERS=https://localhost:8443 \
+  java -jar target/server-0.0.1-SNAPSHOT.jar
+
+# Dev mode with H2 console enabled (http://localhost:PORT/h2-console):
+java -Dspring.profiles.active=dev -jar target/server-0.0.1-SNAPSHOT.jar
 ```
 
 ## 3. Run React Client
@@ -33,31 +43,64 @@ npm run dev
 Client runs at http://localhost:3000 and proxies `/api` to the server.
 
 ## 4. Quick API Test
+All API calls use HTTPS with self-signed certificate (`-k` flag bypasses cert validation).
+
 ```bash
 # Create status
-curl -X POST http://localhost:8443/api/status \
+curl -k -X POST https://localhost:8443/api/status \
   -H "Content-Type: application/json" \
   -d '{"username":"RECON-01","statustext":"On the way","time":"2026-04-21T10:00:00Z","latitude":48.215,"longitude":16.385}'
 
 # List all
-curl http://localhost:8443/api/status
+curl -k https://localhost:8443/api/status
 
 # Get one
-curl http://localhost:8443/api/status/RECON-01
+curl -k https://localhost:8443/api/status/RECON-01
 
 # Delete
-curl -X DELETE http://localhost:8443/api/status/RECON-01
+curl -k -X DELETE https://localhost:8443/api/status/RECON-01
+
+# Health (includes node state)
+curl -k https://localhost:8443/api/health
+# → {"status":"UP","nodeId":"node-a","nodeState":"ACTIVE"}
 ```
 
 ## 5. Verify Replication
-1. Create a status on Node A (port 8443).
-2. Query Node B (port 8444) — the status should appear within seconds via RabbitMQ.
+1. Start RabbitMQ, Node A, and Node B (see section 2).
+2. Create a status on Node A (port 8443).
+3. Query Node B (port 8444) — the status should appear within seconds via RabbitMQ.
+4. Check Node B bootstrapped: `curl -k https://localhost:8444/api/health` shows `"nodeState":"ACTIVE"`.
 
-## 6. TLS (Optional for PoC)
-To enable HTTPS, generate a keystore:
+## 6. Multi-Node Demo with Docker
 ```bash
-keytool -genkeypair -alias tevs -keyalg RSA -keysize 2048 \
-  -storetype PKCS12 -keystore server/src/main/resources/keystore.p12 \
-  -validity 365 -dname "CN=localhost" -storepass changeit -keypass changeit
+# Build all server JARs
+cd server && mvn clean package && cd ..
+
+# Start full stack (RabbitMQ + 3 nodes)
+docker compose -f docker-compose.demo.yml up --build
 ```
-Then set `server.ssl.enabled: true` in `application.yml` and update client base URLs to `https://`.
+
+## 7. Architecture
+
+```
+┌──────────────┐     HTTPS      ┌──────────────┐
+│   Client     │ ──────────────▶│   Node A     │────┐
+│ (React+Vite) │                │ (8443)       │    │
+└──────────────┘                └──────────────┘    │
+                                      │             │
+                                      │ AMQP        │ HTTPS /api/sync/all
+                                      ▼             ▼
+                               ┌──────────────┐ ┌──────────────┐
+                               │  RabbitMQ    │ │   Node B     │
+                               │ status.sync  │ │ (8444)       │
+                               └──────────────┘ └──────────────┘
+                                      │
+                                      │ AMQP
+                                      ▼
+                               ┌──────────────┐
+                               │   Node C     │
+                               │ (8445)       │
+                               └──────────────┘
+
+Node lifecycle: BOOTSTRAPPING → (sync from peer via /api/sync/all) → ACTIVE
+Conflict resolution: Last-Writer-Wins (LWW) by timestamp
